@@ -113,17 +113,41 @@ func TestResponseWriterHijack(t *testing.T) {
 	writer.reset(testWriter)
 	w := ResponseWriter(writer)
 
-	assert.Panics(t, func() {
-		_, _, err := w.Hijack()
-		require.NoError(t, err)
-	})
-	assert.True(t, w.Written())
+	// httptest.NewRecorder() does not implement http.Hijacker or http.CloseNotifier,
+	// so Hijack/CloseNotify must degrade gracefully instead of panicking.
+	_, _, err := w.Hijack()
+	require.ErrorIs(t, err, http.ErrNotSupported)
+	// A failed hijack must not mark the writer as written.
+	assert.False(t, w.Written())
 
-	assert.Panics(t, func() {
-		w.CloseNotify()
+	assert.NotPanics(t, func() {
+		assert.Nil(t, w.CloseNotify())
 	})
 
 	w.Flush()
+}
+
+// nonHijackableResponseWriter wraps an http.ResponseWriter and deliberately does
+// not implement http.Hijacker or http.CloseNotifier, mimicking wrappers such as
+// the one produced by http.TimeoutHandler.
+type nonHijackableResponseWriter struct {
+	http.ResponseWriter
+}
+
+func TestResponseWriterHijackNotSupported(t *testing.T) {
+	writer := &responseWriter{}
+	writer.reset(&nonHijackableResponseWriter{ResponseWriter: httptest.NewRecorder()})
+	w := ResponseWriter(writer)
+
+	// Hijack must not panic when the underlying ResponseWriter does not implement http.Hijacker.
+	_, _, err := w.Hijack()
+	require.ErrorIs(t, err, http.ErrNotSupported)
+	assert.False(t, w.Written())
+
+	// CloseNotify must not panic when the underlying ResponseWriter does not implement http.CloseNotifier.
+	assert.NotPanics(t, func() {
+		assert.Nil(t, w.CloseNotify())
+	})
 }
 
 type mockHijacker struct {
