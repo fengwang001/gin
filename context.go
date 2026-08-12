@@ -141,6 +141,19 @@ func (c *Context) Copy() *Context {
 	cp.Params = make([]Param, len(cParams))
 	copy(cp.Params, cParams)
 
+	cErrors := c.Errors
+	cp.Errors = make(errorMsgs, len(cErrors))
+	for i, e := range cErrors {
+		if e != nil {
+			errCopy := *e
+			cp.Errors[i] = &errCopy
+		}
+	}
+
+	cAccepted := c.Accepted
+	cp.Accepted = make([]string, len(cAccepted))
+	copy(cp.Accepted, cAccepted)
+
 	return &cp
 }
 

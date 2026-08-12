@@ -689,6 +689,49 @@ func TestContextCopy(t *testing.T) {
 	assert.Equal(t, cp.fullPath, c.fullPath)
 }
 
+func TestContextCopyCopiesErrors(t *testing.T) {
+	c, _ := CreateTestContext(httptest.NewRecorder())
+	c.Request, _ = http.NewRequest(http.MethodPost, "/", nil)
+
+	// Attach two errors via c.Error().
+	firstErr := errors.New("first error")
+	secondErr := errors.New("second error")
+	c.Error(firstErr) //nolint: errcheck
+	c.Error(&Error{ //nolint: errcheck
+		Err:  secondErr,
+		Meta: "some data 2",
+		Type: ErrorTypePublic,
+	})
+
+	// Set accepted content-negotiation formats via c.SetAccepted().
+	c.SetAccepted(MIMEJSON, MIMEXML)
+
+	cp := c.Copy()
+
+	// Accepted must be copied, not lost as nil.
+	assert.Equal(t, c.Accepted, cp.Accepted)
+	assert.Len(t, cp.Accepted, 2)
+
+	// Errors must be copied with the same contents, not lost as nil.
+	assert.Len(t, cp.Errors, len(c.Errors))
+	assert.Equal(t, c.Errors, cp.Errors)
+	assert.Equal(t, firstErr, cp.Errors[0].Err)
+	assert.Equal(t, secondErr, cp.Errors[1].Err)
+	assert.Equal(t, "some data 2", cp.Errors[1].Meta)
+	assert.Equal(t, ErrorTypePublic, cp.Errors[1].Type)
+
+	// The copy must be a deep copy: mutating the copy must not affect the
+	// original context, and appending must not be visible on the original.
+	cp.Errors[0].Type = ErrorTypePublic
+	assert.Equal(t, ErrorTypePrivate, c.Errors[0].Type)
+
+	cp.Errors = append(cp.Errors, &Error{Err: errors.New("third error")})
+	assert.Len(t, c.Errors, 2)
+
+	cp.Accepted = append(cp.Accepted, MIMEXML)
+	assert.Len(t, c.Accepted, 2)
+}
+
 func TestContextHandlerName(t *testing.T) {
 	c, _ := CreateTestContext(httptest.NewRecorder())
 	c.handlers = HandlersChain{func(c *Context) {}, handlerNameTest}
