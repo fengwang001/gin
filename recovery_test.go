@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPanicClean(t *testing.T) {
@@ -72,6 +73,36 @@ func TestPanicInHandler(t *testing.T) {
 	assert.Contains(t, buffer.String(), "GET /recovery")
 
 	SetMode(TestMode)
+}
+
+// TestPanicInHandlerRecordsError asserts that the default recovery handler
+// records the recovered panic value as an ErrorTypePrivate error on the
+// context, so callers can inspect what panicked.
+func TestPanicInHandlerRecordsError(t *testing.T) {
+	buffer := new(strings.Builder)
+	router := New()
+
+	var captured *Context
+	// Register an outermost middleware whose deferred closure runs after the
+	// recovery middleware has handled the panic, so we can inspect c.Errors.
+	router.Use(func(c *Context) {
+		defer func() {
+			captured = c
+		}()
+		c.Next()
+	})
+	router.Use(RecoveryWithWriter(buffer))
+	router.GET("/recovery", func(_ *Context) {
+		panic("Oops, Houston, we have a problem")
+	})
+
+	w := PerformRequest(router, http.MethodGet, "/recovery")
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	require.NotNil(t, captured)
+	require.Len(t, captured.Errors, 1)
+	assert.Contains(t, captured.Errors.Errors(), "Oops, Houston, we have a problem")
+	assert.True(t, captured.Errors[0].IsType(ErrorTypePrivate))
 }
 
 // TestPanicWithAbort assert that panic has been recovered even if context.Abort was used.
