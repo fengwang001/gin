@@ -738,11 +738,18 @@ func (c *Context) SaveUploadedFile(file *multipart.FileHeader, dst string, perm 
 		mode = perm[0]
 	}
 	dir := filepath.Dir(dst)
+	_, statErr := os.Stat(dir)
 	if err = os.MkdirAll(dir, mode); err != nil {
 		return err
 	}
-	if err = os.Chmod(dir, mode); err != nil {
-		return err
+	// Only apply the requested mode to directories that MkdirAll just
+	// created. When the directory already existed (e.g. uploading to a
+	// system directory not owned by the current user, such as /tmp),
+	// keep its original permissions unchanged.
+	if os.IsNotExist(statErr) {
+		if err = os.Chmod(dir, mode); err != nil {
+			return err
+		}
 	}
 
 	out, err := os.Create(dst)

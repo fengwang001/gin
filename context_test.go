@@ -274,6 +274,42 @@ func TestSaveUploadedFileWithPermissionFailed(t *testing.T) {
 	require.Error(t, c.SaveUploadedFile(f, dst, mode))
 }
 
+func TestSaveUploadedFileToExistingDir(t *testing.T) {
+	buf := new(bytes.Buffer)
+	mw := multipart.NewWriter(buf)
+	w, err := mw.CreateFormFile("file", "existing_dir_test")
+	require.NoError(t, err)
+	_, err = w.Write([]byte("existing_dir_test"))
+	require.NoError(t, err)
+	mw.Close()
+	c, _ := CreateTestContext(httptest.NewRecorder())
+	c.Request, _ = http.NewRequest(http.MethodPost, "/", buf)
+	c.Request.Header.Set("Content-Type", mw.FormDataContentType())
+	f, err := c.FormFile("file")
+	require.NoError(t, err)
+	assert.Equal(t, "existing_dir_test", f.Filename)
+
+	// Pre-create the destination directory with a permission mode that
+	// differs from the one passed to SaveUploadedFile. Uploading into an
+	// already existing directory must succeed and preserve its original
+	// permissions: a system directory not owned by the current user (such
+	// as /tmp) would otherwise make the unconditional chmod fail with
+	// "operation not permitted".
+	dir := t.TempDir()
+	const mode fs.FileMode = 0o700
+	require.NoError(t, os.Chmod(dir, mode))
+	before, err := os.Stat(dir)
+	require.NoError(t, err)
+	require.Equal(t, mode, before.Mode().Perm())
+
+	dst := filepath.Join(dir, "existing_dir_test")
+	require.NoError(t, c.SaveUploadedFile(f, dst, 0o755))
+
+	after, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, mode, after.Mode().Perm(), "existing directory permissions must be preserved")
+}
+
 func TestContextReset(t *testing.T) {
 	router := New()
 	c := router.allocateContext(0)
