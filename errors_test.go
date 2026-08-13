@@ -139,15 +139,3 @@ func TestErrorUnwrapNonPointer(t *testing.T) {
 	var testErrNonPointer TestErr
 	require.ErrorAs(t, wrappedErr, &testErrNonPointer)
 }
-
-func TestErrorUnwrapNonPointer(t *testing.T) {
-	innerErr := TestErr("some error")
-	errNonPointer := Error{
-		Err:  innerErr,
-		Type: ErrorTypeAny,
-	}
-	wrappedErr := fmt.Errorf("wrapped: %w", errNonPointer)
-	require.ErrorIs(t, wrappedErr, innerErr)
-	var testErrNonPointer TestErr
-	require.ErrorAs(t, wrappedErr, &testErrNonPointer)
-}
