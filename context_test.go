@@ -438,6 +438,25 @@ func TestContextDefaultQueryOnEmptyRequest(t *testing.T) {
 	})
 }
 
+func TestContextInitQueryCache(t *testing.T) {
+	// c.Request is non-nil but c.Request.URL is nil; initQueryCache must
+	// not panic and should fall back to an empty url.Values.
+	c, _ := CreateTestContext(httptest.NewRecorder())
+	c.Request = &http.Request{}
+
+	assert.NotPanics(t, func() {
+		value, ok := c.GetQuery("foo")
+		assert.False(t, ok)
+		assert.Empty(t, value)
+		assert.Empty(t, c.Query("foo"))
+		assert.Equal(t, "nada", c.DefaultQuery("foo", "nada"))
+		assert.Empty(t, c.QueryArray("foo"))
+	})
+
+	c.initQueryCache()
+	assert.Equal(t, url.Values{}, c.queryCache)
+}
+
 func TestContextQueryAndPostForm(t *testing.T) {
 	c, _ := CreateTestContext(httptest.NewRecorder())
 	body := bytes.NewBufferString("foo=bar&page=11&both=&foo=second")
