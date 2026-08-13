@@ -231,7 +231,11 @@ func setByForm(value reflect.Value, field reflect.StructField, form map[string][
 
 	switch value.Kind() {
 	case reflect.Slice:
-		if !ok {
+		if len(vs) == 0 {
+			if !opt.isDefaultExists {
+				return false, nil
+			}
+
 			vs = []string{opt.defaultValue}
 
 			// pre-process the default value for multi if present
@@ -251,7 +255,11 @@ func setByForm(value reflect.Value, field reflect.StructField, form map[string][
 
 		return true, setSlice(vs, value, field)
 	case reflect.Array:
-		if !ok {
+		if len(vs) == 0 {
+			if !opt.isDefaultExists {
+				return false, nil
+			}
+
 			vs = []string{opt.defaultValue}
 
 			// pre-process the default value for multi if present
