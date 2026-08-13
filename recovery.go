@@ -68,6 +68,12 @@ func CustomRecoveryWithWriter(out io.Writer, handle RecoveryFunc) HandlerFunc {
 						}
 					}
 				}
+				// http.ErrAbortHandler is a sentinel panic value used to abort a
+				// handler. Like a broken connection it is not a condition that
+				// warrants a panic stack trace, so it is handled the same way.
+				if err == http.ErrAbortHandler {
+					brokenPipe = true
+				}
 				if logger != nil {
 					const stackSkip = 3
 					if brokenPipe {

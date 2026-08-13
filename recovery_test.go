@@ -88,6 +88,26 @@ func TestPanicWithAbort(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+// TestPanicWithAbortHandler asserts that panicking with http.ErrAbortHandler is
+// treated like a broken connection: the recovery middleware logs the error
+// message without a panic stack trace and without the "panic recovered" banner,
+// and it does not turn the intentional abort into a 500 response.
+func TestPanicWithAbortHandler(t *testing.T) {
+	buffer := new(strings.Builder)
+	router := New()
+	router.Use(RecoveryWithWriter(buffer))
+	router.GET("/recovery", func(_ *Context) {
+		panic(http.ErrAbortHandler)
+	})
+	// RUN
+	w := PerformRequest(router, http.MethodGet, "/recovery")
+	// TEST
+	assert.Contains(t, buffer.String(), "net/http: abort Handler")
+	assert.NotContains(t, buffer.String(), "panic recovered")
+	assert.NotContains(t, buffer.String(), t.Name())
+	assert.NotEqual(t, http.StatusInternalServerError, w.Code)
+}
+
 func TestSource(t *testing.T) {
 	bs := source(nil, 0)
 	assert.Equal(t, dunnoBytes, bs)
