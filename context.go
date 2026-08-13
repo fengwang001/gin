@@ -152,6 +152,9 @@ func (c *Context) HandlerName() string {
 func (c *Context) HandlerNames() []string {
 	hn := make([]string, 0, len(c.handlers))
 	for _, val := range c.handlers {
+		if val == nil {
+			continue
+		}
 		hn = append(hn, nameOfFunction(val))
 	}
 	return hn
