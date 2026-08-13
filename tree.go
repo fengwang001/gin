@@ -734,205 +734,145 @@ walk: // Outer loop for walking the tree
 			return nil
 		}
 
-		// If this node does not have a wildcard (param or catchAll) child,
-		// we can just look up the next child node and continue to walk down
-		// the tree
-		if !n.wildChild {
-			// Skip rune bytes already processed
-			rb = shiftNRuneBytes(rb, npLen)
+		// Look up the next child node by matching the indices and continue
+		// to walk down the tree. Static children are always tried first so
+		// that they take precedence over any wildcard (param or catchAll)
+		// child, which addChild keeps at the end of the children array and
+		// which is used as a fallback below (consistent with getValue).
+		// Skip rune bytes already processed
+		rb = shiftNRuneBytes(rb, npLen)
 
-			if rb[0] != 0 {
-				// Old rune not finished
+		if rb[0] != 0 {
+			// Old rune not finished
+			idxc := rb[0]
+			for i, c := range []byte(n.indices) {
+				if c == idxc {
+					// continue with child node
+					n = n.children[i]
+					npLen = len(n.path)
+					continue walk
+				}
+			}
+		} else {
+			// Process a new rune
+			var rv rune
+
+			// Find rune start.
+			// Runes are up to 4 byte long,
+			// -4 would definitely be another rune.
+			var off int
+			for max_ := min(npLen, 3); off < max_; off++ {
+				if i := npLen - off; utf8.RuneStart(oldPath[i]) {
+					// read rune from cached path
+					rv, _ = utf8.DecodeRuneInString(oldPath[i:])
+					break
+				}
+			}
+
+			// Calculate lowercase bytes of current rune
+			lo := unicode.ToLower(rv)
+			utf8.EncodeRune(rb[:], lo)
+
+			// Skip already processed bytes
+			rb = shiftNRuneBytes(rb, off)
+
+			idxc := rb[0]
+			for i, c := range []byte(n.indices) {
+				// Lowercase matches
+				if c == idxc {
+					// must use a recursive approach since both the
+					// uppercase byte and the lowercase byte might exist
+					// as an index
+					if out := n.children[i].findCaseInsensitivePathRec(
+						path, ciPath, rb, fixTrailingSlash,
+					); out != nil {
+						return out
+					}
+					break
+				}
+			}
+
+			// If we found no match, the same for the uppercase rune,
+			// if it differs
+			if up := unicode.ToUpper(rv); up != lo {
+				utf8.EncodeRune(rb[:], up)
+				rb = shiftNRuneBytes(rb, off)
+
 				idxc := rb[0]
 				for i, c := range []byte(n.indices) {
+					// Uppercase matches
 					if c == idxc {
-						// continue with child node
+						// Continue with child node
 						n = n.children[i]
 						npLen = len(n.path)
 						continue walk
 					}
 				}
-			} else {
-				// Process a new rune
-				var rv rune
-
-				// Find rune start.
-				// Runes are up to 4 byte long,
-				// -4 would definitely be another rune.
-				var off int
-				for max_ := min(npLen, 3); off < max_; off++ {
-					if i := npLen - off; utf8.RuneStart(oldPath[i]) {
-						// read rune from cached path
-						rv, _ = utf8.DecodeRuneInString(oldPath[i:])
-						break
-					}
-				}
-
-				// Calculate lowercase bytes of current rune
-				lo := unicode.ToLower(rv)
-				utf8.EncodeRune(rb[:], lo)
-
-				// Skip already processed bytes
-				rb = shiftNRuneBytes(rb, off)
-
-				idxc := rb[0]
-				for i, c := range []byte(n.indices) {
-					// Lowercase matches
-					if c == idxc {
-						// must use a recursive approach since both the
-						// uppercase byte and the lowercase byte might exist
-						// as an index
-						if out := n.children[i].findCaseInsensitivePathRec(
-							path, ciPath, rb, fixTrailingSlash,
-						); out != nil {
-							return out
-						}
-						break
-					}
-				}
-
-				// If we found no match, the same for the uppercase rune,
-				// if it differs
-				if up := unicode.ToUpper(rv); up != lo {
-					utf8.EncodeRune(rb[:], up)
-					rb = shiftNRuneBytes(rb, off)
-
-					idxc := rb[0]
-					for i, c := range []byte(n.indices) {
-						// Uppercase matches
-						if c == idxc {
-							// Continue with child node
-							n = n.children[i]
-							npLen = len(n.path)
-							continue walk
-						}
-					}
-				}
-			}
-
-			// Nothing found. We can recommend to redirect to the same URL
-			// without a trailing slash if a leaf exists for that path
-			if fixTrailingSlash && path == "/" && n.handlers != nil {
-				return ciPath
-			}
-			return nil
-		}
-
-		// When wildChild is true, try static children first (via indices)
-		// before falling back to the wildcard child. This ensures that
-		// case-insensitive lookups prefer static routes over param routes
-		// (e.g., /PREFIX/XXX should resolve to /prefix/xxx, not match :id).
-		if len(n.indices) > 0 {
-			rb = shiftNRuneBytes(rb, npLen)
-
-			if rb[0] != 0 {
-				idxc := rb[0]
-				for i, c := range []byte(n.indices) {
-					if c == idxc {
-						if out := n.children[i].findCaseInsensitivePathRec(
-							path, ciPath, rb, fixTrailingSlash,
-						); out != nil {
-							return out
-						}
-						break
-					}
-				}
-			} else {
-				var rv rune
-				var off int
-				for max_ := min(npLen, 3); off < max_; off++ {
-					if i := npLen - off; utf8.RuneStart(oldPath[i]) {
-						rv, _ = utf8.DecodeRuneInString(oldPath[i:])
-						break
-					}
-				}
-
-				lo := unicode.ToLower(rv)
-				utf8.EncodeRune(rb[:], lo)
-				rb = shiftNRuneBytes(rb, off)
-
-				idxc := rb[0]
-				for i, c := range []byte(n.indices) {
-					if c == idxc {
-						if out := n.children[i].findCaseInsensitivePathRec(
-							path, ciPath, rb, fixTrailingSlash,
-						); out != nil {
-							return out
-						}
-						break
-					}
-				}
-
-				if up := unicode.ToUpper(rv); up != lo {
-					utf8.EncodeRune(rb[:], up)
-					rb = shiftNRuneBytes(rb, off)
-
-					idxc := rb[0]
-					for i, c := range []byte(n.indices) {
-						if c == idxc {
-							if out := n.children[i].findCaseInsensitivePathRec(
-								path, ciPath, rb, fixTrailingSlash,
-							); out != nil {
-								return out
-							}
-							break
-						}
-					}
-				}
 			}
 		}
 
-		// Fall back to wildcard child, which is always at the end of the array
-		n = n.children[len(n.children)-1]
-		switch n.nType {
-		case param:
-			// Find param end (either '/' or path end)
-			end := 0
-			for end < len(path) && path[end] != '/' {
-				end++
-			}
-
-			// Add param value to case insensitive path
-			ciPath = append(ciPath, path[:end]...)
-
-			// We need to go deeper!
-			if end < len(path) {
-				if len(n.children) > 0 {
-					// Continue with child node
-					n = n.children[0]
-					npLen = len(n.path)
-					path = path[end:]
-					continue
+		// No static child matched. Fall back to the wildcard child, which is
+		// always kept at the end of the children array by addChild, the same
+		// convention used by getValue.
+		if n.wildChild {
+			n = n.children[len(n.children)-1]
+			switch n.nType {
+			case param:
+				// Find param end (either '/' or path end)
+				end := 0
+				for end < len(path) && path[end] != '/' {
+					end++
 				}
 
-				// ... but we can't
-				if fixTrailingSlash && len(path) == end+1 {
+				// Add param value to case insensitive path
+				ciPath = append(ciPath, path[:end]...)
+
+				// We need to go deeper!
+				if end < len(path) {
+					if len(n.children) > 0 {
+						// Continue with child node
+						n = n.children[0]
+						npLen = len(n.path)
+						path = path[end:]
+						continue
+					}
+
+					// ... but we can't
+					if fixTrailingSlash && len(path) == end+1 {
+						return ciPath
+					}
+					return nil
+				}
+
+				if n.handlers != nil {
 					return ciPath
 				}
-				return nil
-			}
 
-			if n.handlers != nil {
-				return ciPath
-			}
-
-			if fixTrailingSlash && len(n.children) == 1 {
-				// No handle found. Check if a handle for this path + a
-				// trailing slash exists
-				n = n.children[0]
-				if n.path == "/" && n.handlers != nil {
-					return append(ciPath, '/')
+				if fixTrailingSlash && len(n.children) == 1 {
+					// No handle found. Check if a handle for this path + a
+					// trailing slash exists
+					n = n.children[0]
+					if n.path == "/" && n.handlers != nil {
+						return append(ciPath, '/')
+					}
 				}
+
+				return nil
+
+			case catchAll:
+				return append(ciPath, path...)
+
+			default:
+				panic("invalid node type")
 			}
-
-			return nil
-
-		case catchAll:
-			return append(ciPath, path...)
-
-		default:
-			panic("invalid node type")
 		}
+
+		// Nothing found. We can recommend to redirect to the same URL
+		// without a trailing slash if a leaf exists for that path
+		if fixTrailingSlash && path == "/" && n.handlers != nil {
+			return ciPath
+		}
+		return nil
 	}
 
 	// Nothing found.
