@@ -637,9 +637,12 @@ func (engine *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // Disclaimer: You can loop yourself to deal with this, use wisely.
 func (engine *Engine) HandleContext(c *Context) {
 	oldIndexValue := c.index
+	oldHandlers := c.handlers
+	oldFullPath := c.fullPath
 	c.reset()
 	engine.handleHTTPRequest(c)
-
+	c.handlers = oldHandlers
+	c.fullPath = oldFullPath
 	c.index = oldIndexValue
 }
 
