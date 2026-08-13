@@ -715,3 +715,67 @@ func TestMappingEmptyValues(t *testing.T) {
 		assert.Equal(t, []int{1, 2, 3}, s.SliceCsv)
 	})
 }
+
+func TestMappingTimeUnixNano(t *testing.T) {
+	t.Run("empty time and duration yield zero values", func(t *testing.T) {
+		var s struct {
+			CreateTime    time.Time     `form:"createTime" time_format:"unixNano"`
+			UnixTime      time.Time     `form:"unixTime" time_format:"unix"`
+			UnixMilliTime time.Time     `form:"unixMilliTime" time_format:"unixmilli"`
+			UnixMicroTime time.Time     `form:"unixMicroTime" time_format:"unixmicro"`
+			Duration      time.Duration `form:"duration"`
+		}
+
+		err := mapForm(&s, map[string][]string{
+			"createTime":    {""},
+			"unixTime":      {""},
+			"unixMilliTime": {""},
+			"unixMicroTime": {""},
+			"duration":      {""},
+		})
+		require.NoError(t, err)
+		assert.True(t, s.CreateTime.IsZero())
+		assert.True(t, s.UnixTime.IsZero())
+		assert.True(t, s.UnixMilliTime.IsZero())
+		assert.True(t, s.UnixMicroTime.IsZero())
+		assert.Equal(t, time.Duration(0), s.Duration)
+	})
+
+	t.Run("valid unix nano and duration", func(t *testing.T) {
+		var s struct {
+			CreateTime time.Time     `form:"createTime" time_format:"unixNano"`
+			Duration   time.Duration `form:"duration"`
+		}
+
+		err := mapForm(&s, map[string][]string{
+			"createTime": {"1562400033000000123"},
+			"duration":   {"5s"},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1562400033000000123), s.CreateTime.UnixNano())
+		assert.Equal(t, 5*time.Second, s.Duration)
+	})
+
+	t.Run("invalid non-empty values still error", func(t *testing.T) {
+		var s struct {
+			CreateTime time.Time     `form:"createTime" time_format:"unixNano"`
+			Duration   time.Duration `form:"duration"`
+		}
+
+		err := mapForm(&s, map[string][]string{"createTime": {"bad"}})
+		require.Error(t, err)
+
+		err = mapForm(&s, map[string][]string{"duration": {"bad"}})
+		require.Error(t, err)
+	})
+
+	t.Run("string fields are not trimmed", func(t *testing.T) {
+		var s struct {
+			Name string `form:"name"`
+		}
+
+		err := mapForm(&s, map[string][]string{"name": {"  hi  "}})
+		require.NoError(t, err)
+		assert.Equal(t, "  hi  ", s.Name)
+	})
+}
