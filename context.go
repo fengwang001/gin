@@ -40,7 +40,6 @@ const (
 	MIMEYAML2             = binding.MIMEYAML2
 	MIMETOML              = binding.MIMETOML
 	MIMEPROTOBUF          = binding.MIMEPROTOBUF
-	MIMEBSON              = binding.MIMEBSON
 )
 
 // BodyBytesKey indicates a default body bytes key.
@@ -140,16 +139,6 @@ func (c *Context) Copy() *Context {
 	cParams := c.Params
 	cp.Params = make([]Param, len(cParams))
 	copy(cp.Params, cParams)
-
-	if c.Errors != nil {
-		cp.Errors = make(errorMsgs, len(c.Errors))
-		copy(cp.Errors, c.Errors)
-	}
-
-	if c.Accepted != nil {
-		cp.Accepted = make([]string, len(c.Accepted))
-		copy(cp.Accepted, c.Accepted)
-	}
 
 	return &cp
 }
@@ -397,11 +386,6 @@ func (c *Context) GetDuration(key any) time.Duration {
 	return getTyped[time.Duration](c, key)
 }
 
-// GetError returns the value associated with the key as an error.
-func (c *Context) GetError(key any) error {
-	return getTyped[error](c, key)
-}
-
 // GetIntSlice returns the value associated with the key as a slice of integers.
 func (c *Context) GetIntSlice(key any) []int {
 	return getTyped[[]int](c, key)
@@ -465,11 +449,6 @@ func (c *Context) GetFloat64Slice(key any) []float64 {
 // GetStringSlice returns the value associated with the key as a slice of strings.
 func (c *Context) GetStringSlice(key any) []string {
 	return getTyped[[]string](c, key)
-}
-
-// GetErrorSlice returns the value associated with the key as a slice of errors.
-func (c *Context) GetErrorSlice(key any) []error {
-	return getTyped[[]error](c, key)
 }
 
 // GetStringMap returns the value associated with the key as a map of interfaces.
@@ -629,8 +608,8 @@ func (c *Context) DefaultPostForm(key, defaultValue string) string {
 // For example, during a PATCH request to update the user's email:
 //
 //	    email=mail@example.com  -->  ("mail@example.com", true) := GetPostForm("email") // set email to "mail@example.com"
-//		email=                  -->  ("", true) := GetPostForm("email")                 // set email to ""
-//	                            -->  ("", false) := GetPostForm("email")                // do nothing with email
+//		   email=                  -->  ("", true) := GetPostForm("email") // set email to ""
+//	                            -->  ("", false) := GetPostForm("email") // do nothing with email
 func (c *Context) GetPostForm(key string) (string, bool) {
 	if values, ok := c.GetPostFormArray(key); ok {
 		return values[0], ok
@@ -726,11 +705,6 @@ func (c *Context) MultipartForm() (*multipart.Form, error) {
 }
 
 // SaveUploadedFile uploads the form file to specific dst.
-// An optional perm argument specifies the permission bits used when creating
-// the destination directory. If not provided, the default is 0750. The exact
-// permission is enforced only on the destination directory and only when it is
-// newly created by this call; pre-existing directories (e.g. /tmp) are not
-// modified.
 func (c *Context) SaveUploadedFile(file *multipart.FileHeader, dst string, perm ...fs.FileMode) error {
 	src, err := file.Open()
 	if err != nil {
@@ -743,19 +717,11 @@ func (c *Context) SaveUploadedFile(file *multipart.FileHeader, dst string, perm 
 		mode = perm[0]
 	}
 	dir := filepath.Dir(dst)
-	// Record whether the destination directory exists before MkdirAll, so we
-	// only chmod a directory we just created. Chmod'ing a pre-existing directory
-	// the process does not own (e.g. /tmp) fails with "operation not permitted"
-	// (#4622). A non-ErrNotExist stat error also skips chmod and lets MkdirAll
-	// surface the underlying failure.
-	_, statErr := os.Stat(dir)
 	if err = os.MkdirAll(dir, mode); err != nil {
 		return err
 	}
-	if errors.Is(statErr, os.ErrNotExist) {
-		if err = os.Chmod(dir, mode); err != nil {
-			return err
-		}
+	if err = os.Chmod(dir, mode); err != nil {
+		return err
 	}
 
 	out, err := os.Create(dst)
@@ -774,8 +740,8 @@ func (c *Context) SaveUploadedFile(file *multipart.FileHeader, dst string, perm 
 //	"application/json" --> JSON binding
 //	"application/xml"  --> XML binding
 //
-// It parses the request's body based on the Content-Type (e.g., JSON or XML).
-// It decodes the payload into the struct specified as a pointer.
+// It parses the request's body as JSON if Content-Type == "application/json" using JSON or XML as a JSON input.
+// It decodes the json payload into the struct specified as a pointer.
 // It writes a 400 error and sets Content-Type header "text/plain" in the response if input is not valid.
 func (c *Context) Bind(obj any) error {
 	b := binding.Default(c.Request.Method, c.ContentType())
@@ -787,7 +753,7 @@ func (c *Context) BindJSON(obj any) error {
 	return c.MustBindWith(obj, binding.JSON)
 }
 
-// BindXML is a shortcut for c.MustBindWith(obj, binding.XML).
+// BindXML is a shortcut for c.MustBindWith(obj, binding.BindXML).
 func (c *Context) BindXML(obj any) error {
 	return c.MustBindWith(obj, binding.XML)
 }
@@ -855,8 +821,8 @@ func (c *Context) MustBindWith(obj any, b binding.Binding) error {
 //	"application/json" --> JSON binding
 //	"application/xml"  --> XML binding
 //
-// It parses the request's body based on the Content-Type (e.g., JSON or XML).
-// It decodes the payload into the struct specified as a pointer.
+// It parses the request's body as JSON if Content-Type == "application/json" using JSON or XML as a JSON input.
+// It decodes the json payload into the struct specified as a pointer.
 // Like c.Bind() but this method does not set the response status code to 400 or abort if input is not valid.
 func (c *Context) ShouldBind(obj any) error {
 	b := binding.Default(c.Request.Method, c.ContentType())
@@ -1012,32 +978,18 @@ func (c *Context) ClientIP() string {
 		}
 	}
 
-	var (
-		trusted  bool
-		remoteIP net.IP
-	)
-	// If gin is listening a unix socket, always trust it.
-	localAddr, ok := c.Request.Context().Value(http.LocalAddrContextKey).(net.Addr)
-	if ok && strings.HasPrefix(localAddr.Network(), "unix") {
-		trusted = true
+	// It also checks if the remoteIP is a trusted proxy or not.
+	// In order to perform this validation, it will see if the IP is contained within at least one of the CIDR blocks
+	// defined by Engine.SetTrustedProxies()
+	remoteIP := net.ParseIP(c.RemoteIP())
+	if remoteIP == nil {
+		return ""
 	}
-
-	// Fallback
-	if !trusted {
-		// It also checks if the remoteIP is a trusted proxy or not.
-		// In order to perform this validation, it will see if the IP is contained within at least one of the CIDR blocks
-		// defined by Engine.SetTrustedProxies()
-		remoteIP = net.ParseIP(c.RemoteIP())
-		if remoteIP == nil {
-			return ""
-		}
-		trusted = c.engine.isTrustedProxy(remoteIP)
-	}
+	trusted := c.engine.isTrustedProxy(remoteIP)
 
 	if trusted && c.engine.ForwardedByClientIP && c.engine.RemoteIPHeaders != nil {
 		for _, headerName := range c.engine.RemoteIPHeaders {
-			headerValue := strings.Join(c.Request.Header.Values(headerName), ",")
-			ip, valid := c.engine.validateHeader(headerValue)
+			ip, valid := c.engine.validateHeader(strings.Join(c.Request.Header.Values(headerName), ", "))
 			if valid {
 				return ip
 			}
@@ -1070,33 +1022,6 @@ func (c *Context) IsWebsocket() bool {
 	return false
 }
 
-// Scheme returns the HTTP scheme of the request ("http" or "https").
-// When running behind reverse proxies or load balancers `Request.URL.Scheme` is usually empty.
-// the original scheme is commonly forwarded via headers such as X-Forwarded-Proto.
-// Reference:
-// https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/X-Forwarded-Proto
-func (c *Context) Scheme() string {
-	if c.Request.TLS != nil {
-		return "https"
-	}
-	if scheme := c.requestHeader("X-Forwarded-Proto"); scheme != "" {
-		return scheme
-	}
-	if scheme := c.requestHeader("X-Forwarded-Protocol"); scheme != "" {
-		return scheme
-	}
-	if ssl := c.requestHeader("X-Forwarded-Ssl"); ssl == "on" {
-		return "https"
-	}
-	if scheme := c.requestHeader("X-Url-Scheme"); scheme != "" {
-		return scheme
-	}
-	if scheme := c.Request.URL.Scheme; scheme != "" {
-		return scheme
-	}
-	return "http"
-}
-
 func (c *Context) requestHeader(key string) string {
 	return c.Request.Header.Get(key)
 }
@@ -1106,10 +1031,9 @@ func (c *Context) requestHeader(key string) string {
 /************************************/
 
 // bodyAllowedForStatus is a copy of http.bodyAllowedForStatus non-exported function.
-// Uses http.StatusContinue constant for better code clarity.
 func bodyAllowedForStatus(status int) bool {
 	switch {
-	case status >= http.StatusContinue && status < http.StatusOK:
+	case status >= 100 && status <= 199:
 		return false
 	case status == http.StatusNoContent:
 		return false
@@ -1274,12 +1198,6 @@ func (c *Context) XML(code int, obj any) {
 	c.Render(code, render.XML{Data: obj})
 }
 
-// PDF writes the given PDF binary data into the response body.
-// It also sets the Content-Type as "application/pdf".
-func (c *Context) PDF(code int, data []byte) {
-	c.Render(code, render.PDF{Data: data})
-}
-
 // YAML serializes the given struct as YAML into the response body.
 func (c *Context) YAML(code int, obj any) {
 	c.Render(code, render.YAML{Data: obj})
@@ -1293,11 +1211,6 @@ func (c *Context) TOML(code int, obj any) {
 // ProtoBuf serializes the given struct as ProtoBuf into the response body.
 func (c *Context) ProtoBuf(code int, obj any) {
 	c.Render(code, render.ProtoBuf{Data: obj})
-}
-
-// BSON serializes the given struct as BSON into the response body.
-func (c *Context) BSON(code int, obj any) {
-	c.Render(code, render.BSON{Data: obj})
 }
 
 // String writes the given string into the response body.
@@ -1407,7 +1320,6 @@ type Negotiate struct {
 	Data         any
 	TOMLData     any
 	PROTOBUFData any
-	BSONData     any
 }
 
 // Negotiate calls different Render according to acceptable Accept format.
@@ -1436,10 +1348,6 @@ func (c *Context) Negotiate(code int, config Negotiate) {
 	case binding.MIMEPROTOBUF:
 		data := chooseData(config.PROTOBUFData, config.Data)
 		c.ProtoBuf(code, data)
-
-	case binding.MIMEBSON:
-		data := chooseData(config.BSONData, config.Data)
-		c.BSON(code, data)
 
 	default:
 		c.AbortWithError(http.StatusNotAcceptable, errors.New("the accepted formats are not offered by the server")) //nolint: errcheck
