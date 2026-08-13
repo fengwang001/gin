@@ -127,3 +127,27 @@ func TestErrorUnwrap(t *testing.T) {
 	var testErr TestErr
 	require.ErrorAs(t, err, &testErr)
 }
+
+func TestErrorUnwrapNonPointer(t *testing.T) {
+	innerErr := TestErr("some error")
+	errNonPointer := Error{
+		Err:  innerErr,
+		Type: ErrorTypeAny,
+	}
+	wrappedErr := fmt.Errorf("wrapped: %w", errNonPointer)
+	require.ErrorIs(t, wrappedErr, innerErr)
+	var testErrNonPointer TestErr
+	require.ErrorAs(t, wrappedErr, &testErrNonPointer)
+}
+
+func TestErrorUnwrapNonPointer(t *testing.T) {
+	innerErr := TestErr("some error")
+	errNonPointer := Error{
+		Err:  innerErr,
+		Type: ErrorTypeAny,
+	}
+	wrappedErr := fmt.Errorf("wrapped: %w", errNonPointer)
+	require.ErrorIs(t, wrappedErr, innerErr)
+	var testErrNonPointer TestErr
+	require.ErrorAs(t, wrappedErr, &testErrNonPointer)
+}
