@@ -497,7 +497,13 @@ walk: // Outer loop for walking the tree
 					}
 
 					// Save param value
-					if params != nil && cap(*params) > 0 {
+					if params != nil {
+					// Preallocate capacity if necessary
+					if cap(*params) < int(globalParamsCount) {
+						newParams := make(Params, len(*params), globalParamsCount)
+						copy(newParams, *params)
+						*params = newParams
+					}
 						if value.params == nil {
 							value.params = params
 						}
@@ -544,6 +550,13 @@ walk: // Outer loop for walking the tree
 				case catchAll:
 					// Save param value
 					if params != nil {
+						// Preallocate capacity if necessary
+						if cap(*params) < int(globalParamsCount) {
+							newParams := make(Params, len(*params), globalParamsCount)
+							copy(newParams, *params)
+							*params = newParams
+						}
+
 						if value.params == nil {
 							value.params = params
 						}
