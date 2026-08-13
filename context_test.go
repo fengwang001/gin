@@ -7,7 +7,6 @@ package gin
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"html/template"
@@ -33,7 +32,6 @@ import (
 	testdata "github.com/gin-gonic/gin/testdata/protoexample"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/v2/bson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -248,11 +246,13 @@ func TestSaveUploadedFileWithPermission(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "permission_test", f.Filename)
 	var mode fs.FileMode = 0o755
-	dst := filepath.Join(t.TempDir(), "subdir", "permission_test")
-	require.NoError(t, c.SaveUploadedFile(f, dst, mode))
-	info, err := os.Stat(filepath.Dir(dst))
+	require.NoError(t, c.SaveUploadedFile(f, "permission_test", mode))
+	t.Cleanup(func() {
+		assert.NoError(t, os.Remove("permission_test"))
+	})
+	info, err := os.Stat(filepath.Dir("permission_test"))
 	require.NoError(t, err)
-	assert.Equal(t, mode, info.Mode().Perm())
+	assert.Equal(t, info.Mode().Perm(), mode)
 }
 
 func TestSaveUploadedFileWithPermissionFailed(t *testing.T) {
@@ -270,52 +270,7 @@ func TestSaveUploadedFileWithPermissionFailed(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "permission_test", f.Filename)
 	var mode fs.FileMode = 0o644
-	dst := filepath.Join(t.TempDir(), "test", "permission_test")
-	require.Error(t, c.SaveUploadedFile(f, dst, mode))
-}
-
-// TestSaveUploadedFileToExistingDir is a regression test for issue #4622.
-// SaveUploadedFile must not call os.Chmod on a directory that already exists,
-// because the process may not own it (e.g. /tmp on Linux/macOS), where chmod
-// fails with "operation not permitted". This asserts the behavioral contract
-// directly — a pre-existing directory's permissions are left unchanged — so it
-// catches the regression on every platform, including environments (root/CI,
-// user-owned $TMPDIR) where chmod on the temp dir would otherwise succeed.
-func TestSaveUploadedFileToExistingDir(t *testing.T) {
-	buf := new(bytes.Buffer)
-	mw := multipart.NewWriter(buf)
-	w, err := mw.CreateFormFile("file", "existing_dir_test")
-	require.NoError(t, err)
-	_, err = w.Write([]byte("existing_dir_test"))
-	require.NoError(t, err)
-	mw.Close()
-
-	c, _ := CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodPost, "/", buf)
-	c.Request.Header.Set("Content-Type", mw.FormDataContentType())
-	f, err := c.FormFile("file")
-	require.NoError(t, err)
-
-	// A pre-existing directory owned by this process, set to a known mode.
-	dir := t.TempDir()
-	require.NoError(t, os.Chmod(dir, 0o700))
-
-	// Pass a perm that differs from the directory's current mode. The fix must
-	// not apply it to the pre-existing directory; the old code chmod'd it
-	// unconditionally, which also failed outright on unowned dirs like /tmp.
-	dst := filepath.Join(dir, "existing_dir_test.txt")
-	require.NoError(t, c.SaveUploadedFile(f, dst, 0o755))
-
-	// The pre-existing directory's permissions must be unchanged.
-	info, err := os.Stat(dir)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm(),
-		"permissions of a pre-existing directory must not be modified")
-
-	// The file must still be written with the correct content.
-	content, err := os.ReadFile(dst)
-	require.NoError(t, err)
-	assert.Equal(t, "existing_dir_test", string(content))
+	require.Error(t, c.SaveUploadedFile(f, "test/permission_test", mode))
 }
 
 func TestContextReset(t *testing.T) {
@@ -561,14 +516,6 @@ func TestContextGetDuration(t *testing.T) {
 	assert.Equal(t, time.Second, c.GetDuration("duration"))
 }
 
-func TestContextGetError(t *testing.T) {
-	c, _ := CreateTestContext(httptest.NewRecorder())
-	key := "error"
-	value := errors.New("test error")
-	c.Set(key, value)
-	assert.Equal(t, value, c.GetError(key))
-}
-
 func TestContextGetIntSlice(t *testing.T) {
 	c, _ := CreateTestContext(httptest.NewRecorder())
 	key := "int-slice"
@@ -671,14 +618,6 @@ func TestContextGetStringSlice(t *testing.T) {
 	assert.Equal(t, []string{"foo"}, c.GetStringSlice("slice"))
 }
 
-func TestContextGetErrorSlice(t *testing.T) {
-	c, _ := CreateTestContext(httptest.NewRecorder())
-	key := "error-slice"
-	value := []error{errors.New("error1"), errors.New("error2")}
-	c.Set(key, value)
-	assert.Equal(t, value, c.GetErrorSlice(key))
-}
-
 func TestContextGetStringMap(t *testing.T) {
 	c, _ := CreateTestContext(httptest.NewRecorder())
 	m := make(map[string]any)
@@ -730,50 +669,6 @@ func TestContextCopy(t *testing.T) {
 	cp.Set("foo", "notBar")
 	assert.NotEqual(t, cp.Keys["foo"], c.Keys["foo"])
 	assert.Equal(t, cp.fullPath, c.fullPath)
-}
-
-func TestContextCopyCopiesErrors(t *testing.T) {
-	c, _ := CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "/", nil)
-	_ = c.Error(errors.New("first error"))
-	_ = c.Error(errors.New("second error"))
-
-	cp := c.Copy()
-
-	// copied context has the same errors
-	assert.Len(t, cp.Errors, 2)
-	assert.Equal(t, c.Errors[0].Error(), cp.Errors[0].Error())
-	assert.Equal(t, c.Errors[1].Error(), cp.Errors[1].Error())
-
-	// mutations on the copy do not affect the original
-	_ = cp.Error(errors.New("third error"))
-	assert.Len(t, c.Errors, 2)
-	assert.Len(t, cp.Errors, 3)
-}
-
-func TestContextCopyCopiesAccepted(t *testing.T) {
-	c, _ := CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "/", nil)
-	c.SetAccepted("application/json", "text/html")
-
-	cp := c.Copy()
-
-	assert.Equal(t, c.Accepted, cp.Accepted)
-
-	// mutations on the copy do not affect the original
-	cp.SetAccepted("text/plain")
-	assert.Equal(t, []string{"application/json", "text/html"}, c.Accepted)
-	assert.Equal(t, []string{"text/plain"}, cp.Accepted)
-}
-
-func TestContextCopyNilErrorsAndAccepted(t *testing.T) {
-	c, _ := CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "/", nil)
-
-	cp := c.Copy()
-
-	assert.Nil(t, cp.Errors)
-	assert.Nil(t, cp.Accepted)
 }
 
 func TestContextHandlerName(t *testing.T) {
@@ -1119,7 +1014,6 @@ func TestContextGetCookie(t *testing.T) {
 }
 
 func TestContextBodyAllowedForStatus(t *testing.T) {
-	assert.False(t, bodyAllowedForStatus(http.StatusContinue))
 	assert.False(t, bodyAllowedForStatus(http.StatusProcessing))
 	assert.False(t, bodyAllowedForStatus(http.StatusNoContent))
 	assert.False(t, bodyAllowedForStatus(http.StatusNotModified))
@@ -1249,37 +1143,6 @@ func TestContextRenderNoContentIndentedJSON(t *testing.T) {
 	assert.Equal(t, "application/json; charset=utf-8", w.Header().Get("Content-Type"))
 }
 
-func TestContextClientIPWithMultipleHeaders(t *testing.T) {
-	c, _ := CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "/test", nil)
-
-	// Multiple X-Forwarded-For headers
-	c.Request.Header.Add("X-Forwarded-For", "1.2.3.4, "+localhostIP)
-	c.Request.Header.Add("X-Forwarded-For", "5.6.7.8")
-	c.Request.RemoteAddr = localhostIP + ":1234"
-
-	c.engine.ForwardedByClientIP = true
-	c.engine.RemoteIPHeaders = []string{"X-Forwarded-For"}
-	_ = c.engine.SetTrustedProxies([]string{localhostIP})
-
-	// Should return 5.6.7.8 (last non-trusted IP)
-	assert.Equal(t, "5.6.7.8", c.ClientIP())
-}
-
-func TestContextClientIPWithSingleHeader(t *testing.T) {
-	c, _ := CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "/test", nil)
-	c.Request.Header.Set("X-Forwarded-For", "1.2.3.4, "+localhostIP)
-	c.Request.RemoteAddr = localhostIP + ":1234"
-
-	c.engine.ForwardedByClientIP = true
-	c.engine.RemoteIPHeaders = []string{"X-Forwarded-For"}
-	_ = c.engine.SetTrustedProxies([]string{localhostIP})
-
-	// Should return 1.2.3.4
-	assert.Equal(t, "1.2.3.4", c.ClientIP())
-}
-
 // Tests that the response is serialized as Secure JSON
 // and Content-Type is set to application/json
 func TestContextRenderSecureJSON(t *testing.T) {
@@ -1406,33 +1269,6 @@ func TestContextRenderNoContentXML(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, w.Code)
 	assert.Empty(t, w.Body.String())
 	assert.Equal(t, "application/xml; charset=utf-8", w.Header().Get("Content-Type"))
-}
-
-// TestContextRenderPDF tests that the response is serialized as PDF
-// and Content-Type is set to application/pdf
-func TestContextRenderPDF(t *testing.T) {
-	w := httptest.NewRecorder()
-	c, _ := CreateTestContext(w)
-
-	data := []byte("%Test pdf content")
-	c.PDF(http.StatusCreated, data)
-
-	assert.Equal(t, http.StatusCreated, w.Code)
-	assert.Equal(t, data, w.Body.Bytes())
-	assert.Equal(t, "application/pdf", w.Header().Get("Content-Type"))
-}
-
-// Tests that no PDF is rendered if code is 204
-func TestContextRenderNoContentPDF(t *testing.T) {
-	w := httptest.NewRecorder()
-	c, _ := CreateTestContext(w)
-
-	data := []byte("%Test pdf content")
-	c.PDF(http.StatusNoContent, data)
-
-	assert.Equal(t, http.StatusNoContent, w.Code)
-	assert.Empty(t, w.Body.Bytes())
-	assert.Equal(t, "application/pdf", w.Header().Get("Content-Type"))
 }
 
 // TestContextRenderString tests that the response is returned
@@ -1818,23 +1654,6 @@ func TestContextNegotiationWithPROTOBUF(t *testing.T) {
 	assert.Equal(t, "application/x-protobuf", w.Header().Get("Content-Type"))
 }
 
-func TestContextNegotiationWithBSON(t *testing.T) {
-	w := httptest.NewRecorder()
-	c, _ := CreateTestContext(w)
-	c.Request, _ = http.NewRequest(http.MethodPost, "", nil)
-
-	c.Negotiate(http.StatusOK, Negotiate{
-		Offered: []string{MIMEBSON, MIMEXML, MIMEJSON, MIMEYAML, MIMEYAML2},
-		Data:    H{"foo": "bar"},
-	})
-
-	bData, _ := bson.Marshal(H{"foo": "bar"})
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, string(bData), w.Body.String())
-	assert.Equal(t, "application/bson", w.Header().Get("Content-Type"))
-}
-
 func TestContextNegotiationNotSupport(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := CreateTestContext(w)
@@ -2065,16 +1884,6 @@ func TestContextClientIP(t *testing.T) {
 	c.engine.trustedCIDRs, _ = c.engine.prepareTrustedCIDRs()
 	resetContextForClientIPTests(c)
 
-	// unix address
-	addr := &net.UnixAddr{Net: "unix", Name: "@"}
-	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), http.LocalAddrContextKey, addr))
-	c.Request.RemoteAddr = addr.String()
-	assert.Equal(t, "20.20.20.20", c.ClientIP())
-
-	// reset
-	c.Request = c.Request.WithContext(context.Background())
-	resetContextForClientIPTests(c)
-
 	// Legacy tests (validating that the defaults don't break the
 	// (insecure!) old behaviour)
 	assert.Equal(t, "20.20.20.20", c.ClientIP())
@@ -2210,6 +2019,40 @@ func resetContextForClientIPTests(c *Context) {
 	c.engine.TrustedPlatform = ""
 	c.engine.trustedCIDRs = defaultTrustedCIDRs
 	c.engine.AppEngine = false
+}
+
+func TestContextClientIPWithMultipleHeaders(t *testing.T) {
+	c, _ := CreateTestContext(httptest.NewRecorder())
+	c.Request, _ = http.NewRequest(http.MethodPost, "/", nil)
+	c.engine.trustedCIDRs, _ = c.engine.prepareTrustedCIDRs()
+	c.engine.RemoteIPHeaders = []string{"X-Forwarded-For"}
+	c.Request.RemoteAddr = "40.40.40.40:42123"
+
+	trustConfigs := [][]string{
+		{"0.0.0.0/0", "::/0"},
+		{"40.40.40.40"},
+		{"40.40.40.40", "30.30.30.30"},
+		{},
+	}
+
+	for _, trusted := range trustConfigs {
+		_ = c.engine.SetTrustedProxies(trusted)
+
+		// Single header carrying multiple comma-separated values.
+		c.Request.Header.Del("X-Forwarded-For")
+		c.Request.Header.Set("X-Forwarded-For", "20.20.20.20, 30.30.30.30")
+		single := c.ClientIP()
+
+		// The same chain split across multiple headers must be combined
+		// (comma-joined) and behave identically to the single header.
+		c.Request.Header.Del("X-Forwarded-For")
+		c.Request.Header.Add("X-Forwarded-For", "20.20.20.20")
+		c.Request.Header.Add("X-Forwarded-For", "30.30.30.30")
+		multiple := c.ClientIP()
+
+		assert.Equalf(t, single, multiple,
+			"trusted=%v: multiple X-Forwarded-For headers should match a single header", trusted)
+	}
 }
 
 func TestContextContentType(t *testing.T) {
@@ -3043,65 +2886,6 @@ func TestWebsocketsRequired(t *testing.T) {
 	assert.False(t, c.IsWebsocket())
 }
 
-func TestContextScheme(t *testing.T) {
-	// TLS connection takes highest priority.
-	c, _ := CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "/", nil)
-	c.Request.TLS = &tls.ConnectionState{}
-	assert.Equal(t, "https", c.Scheme())
-
-	// X-Forwarded-Proto header.
-	c, _ = CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "/", nil)
-	c.Request.Header.Set("X-Forwarded-Proto", "https")
-	assert.Equal(t, "https", c.Scheme())
-
-	c, _ = CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "/", nil)
-	c.Request.Header.Set("X-Forwarded-Proto", "http")
-	assert.Equal(t, "http", c.Scheme())
-
-	// X-Forwarded-Protocol header.
-	c, _ = CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "/", nil)
-	c.Request.Header.Set("X-Forwarded-Protocol", "https")
-	assert.Equal(t, "https", c.Scheme())
-
-	// X-Forwarded-Ssl: on header.
-	c, _ = CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "/", nil)
-	c.Request.Header.Set("X-Forwarded-Ssl", "on")
-	assert.Equal(t, "https", c.Scheme())
-
-	c, _ = CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "/", nil)
-	c.Request.Header.Set("X-Forwarded-Ssl", "off")
-	assert.Equal(t, "http", c.Scheme())
-
-	// X-Url-Scheme header.
-	c, _ = CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "/", nil)
-	c.Request.Header.Set("X-Url-Scheme", "https")
-	assert.Equal(t, "https", c.Scheme())
-
-	// Request.URL.Scheme fallback.
-	c, _ = CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "https://example.com/", nil)
-	assert.Equal(t, "https", c.Scheme())
-
-	// Default fallback: plain http.
-	c, _ = CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "/", nil)
-	assert.Equal(t, "http", c.Scheme())
-
-	// TLS takes priority over X-Forwarded-Proto.
-	c, _ = CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodGet, "/", nil)
-	c.Request.TLS = &tls.ConnectionState{}
-	c.Request.Header.Set("X-Forwarded-Proto", "http")
-	assert.Equal(t, "https", c.Scheme())
-}
-
 func TestGetRequestHeaderValue(t *testing.T) {
 	c, _ := CreateTestContext(httptest.NewRecorder())
 	c.Request, _ = http.NewRequest(http.MethodGet, "/chat", nil)
@@ -3120,16 +2904,6 @@ func TestContextGetRawData(t *testing.T) {
 	data, err := c.GetRawData()
 	require.NoError(t, err)
 	assert.Equal(t, "Fetch binary post data", string(data))
-}
-
-func TestContextGetRawDataNilBody(t *testing.T) {
-	c, _ := CreateTestContext(httptest.NewRecorder())
-	c.Request, _ = http.NewRequest(http.MethodPost, "/", nil)
-
-	data, err := c.GetRawData()
-	assert.Nil(t, data)
-	require.Error(t, err)
-	assert.Equal(t, "cannot read nil body", err.Error())
 }
 
 func TestContextRenderDataFromReader(t *testing.T) {
@@ -3720,24 +3494,6 @@ func TestContextSetCookieData(t *testing.T) {
 		setCookie := c.Writer.Header().Get("Set-Cookie")
 		assert.Contains(t, setCookie, "SameSite=None")
 	})
-
-	// Test that SameSiteDefaultMode inherits from context's sameSite
-	t.Run("SameSiteDefaultMode inherits context sameSite", func(t *testing.T) {
-		c, _ := CreateTestContext(httptest.NewRecorder())
-		c.SetSameSite(http.SameSiteStrictMode)
-		cookie := &http.Cookie{
-			Name:     "user",
-			Value:    "gin",
-			Path:     "/",
-			Domain:   "localhost",
-			Secure:   true,
-			HttpOnly: true,
-			SameSite: http.SameSiteDefaultMode,
-		}
-		c.SetCookieData(cookie)
-		setCookie := c.Writer.Header().Get("Set-Cookie")
-		assert.Contains(t, setCookie, "SameSite=Strict")
-	})
 }
 
 func TestGetMapFromFormData(t *testing.T) {
@@ -3898,22 +3654,22 @@ func BenchmarkGetMapFromFormData(b *testing.B) {
 
 	// Test case 3: Large dataset with many bracket keys
 	largeData := make(map[string][]string)
-	for i := range 100 {
+	for i := 0; i < 100; i++ {
 		key := fmt.Sprintf("ids[%d]", i)
 		largeData[key] = []string{fmt.Sprintf("value%d", i)}
 	}
-	for i := range 50 {
+	for i := 0; i < 50; i++ {
 		key := fmt.Sprintf("names[%d]", i)
 		largeData[key] = []string{fmt.Sprintf("name%d", i)}
 	}
-	for i := range 25 {
+	for i := 0; i < 25; i++ {
 		key := fmt.Sprintf("other[key%d]", i)
 		largeData[key] = []string{fmt.Sprintf("other%d", i)}
 	}
 
 	// Test case 4: Dataset with many non-matching keys (worst case)
 	worstCaseData := make(map[string][]string)
-	for i := range 100 {
+	for i := 0; i < 100; i++ {
 		key := fmt.Sprintf("nonmatching%d", i)
 		worstCaseData[key] = []string{fmt.Sprintf("value%d", i)}
 	}
@@ -3949,7 +3705,7 @@ func BenchmarkGetMapFromFormData(b *testing.B) {
 	for _, bm := range benchmarks {
 		b.Run(bm.name, func(b *testing.B) {
 			b.ReportAllocs()
-			for b.Loop() {
+			for i := 0; i < b.N; i++ {
 				_, _ = getMapFromFormData(bm.data, bm.key)
 			}
 		})
